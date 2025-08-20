@@ -1,7 +1,8 @@
+use burn::grad_clipping::GradientClippingConfig;
 use burn::module::Module;
 use burn::nn::{Initializer, Linear, LinearConfig};
 use burn::optim::AdamWConfig;
-use burn::tensor::activation::{relu, softmax};
+use burn::tensor::activation::{relu, silu, softmax};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::Tensor;
 use burn_rl::agent::{PPOModel, PPOOutput, PPOTrainingConfig, PPO};
@@ -17,7 +18,7 @@ pub struct Net<B: Backend> {
 impl<B: Backend> Net<B> {
     #[allow(unused)]
     pub fn new(input_size: usize, dense_size: usize, output_size: usize) -> Self {
-        let initializer = Initializer::XavierUniform { gain: 1.0 };
+        let initializer = Initializer::KaimingUniform { gain: 1.0, fan_out_only: true };
         Self {
             linear: LinearConfig::new(input_size, dense_size)
                 .with_initializer(initializer.clone())
@@ -34,7 +35,7 @@ impl<B: Backend> Net<B> {
 
 impl<B: Backend> Model<B, Tensor<B, 2>, PPOOutput<B>, Tensor<B, 2>> for Net<B> {
     fn forward(&self, input: Tensor<B, 2>) -> PPOOutput<B> {
-        let layer_0_output = relu(self.linear.forward(input));
+        let layer_0_output = silu(self.linear.forward(input));
         let policies = softmax(self.linear_actor.forward(layer_0_output.clone()), 1);
         let values = self.linear_critic.forward(layer_0_output);
 
@@ -42,7 +43,7 @@ impl<B: Backend> Model<B, Tensor<B, 2>, PPOOutput<B>, Tensor<B, 2>> for Net<B> {
     }
 
     fn infer(&self, input: Tensor<B, 2>) -> Tensor<B, 2> {
-        let layer_0_output = relu(self.linear.forward(input));
+        let layer_0_output = silu(self.linear.forward(input));
         softmax(self.linear_actor.forward(layer_0_output.clone()), 1)
     }
 }
@@ -67,7 +68,14 @@ pub fn run<E: Environment, B: AutodiffBackend>(
         <<E as Environment>::ActionType as Action>::size(),
     );
     let agent = MyAgent::default();
-    let config = PPOTrainingConfig::default();
+    let config = PPOTrainingConfig {
+        batch_size: 64,
+        entropy_weight: 0.01,
+        learning_rate: 0.001,
+        epochs: 8,
+        clip_grad: Some(GradientClippingConfig::Norm(0.5)),
+        ..Default::default()
+    };
 
     let mut optimizer = AdamWConfig::new()
         .with_grad_clipping(config.clip_grad.clone())
@@ -94,17 +102,23 @@ pub fn run<E: Environment, B: AutodiffBackend>(
                     snapshot.reward().clone(),
                     snapshot.done(),
                 );
+                
+                if memory.len() >= MEMORY_SIZE {
+                    println!("Memory limit reached - training model");
+                    model = MyAgent::train::<MEMORY_SIZE>(model, &memory, &mut optimizer, &config);
+                    memory.clear();
+                }
 
                 episode_duration += 1;
                 episode_done = snapshot.done() || episode_duration >= E::MAX_STEPS;
+            }
+            else {
+                println!("no action selected");
             }
         }
         println!(
             "{{\"episode\": {episode}, \"reward\": {episode_reward:.4}, \"duration\": {episode_duration}}}",
         );
-
-        model = MyAgent::train::<MEMORY_SIZE>(model, &memory, &mut optimizer, &config);
-        memory.clear();
     }
 
     agent.valid(model)

@@ -1,7 +1,7 @@
 #![recursion_limit = "256"]
 
 use crate::utils::demo_model;
-use burn::backend::{Autodiff, NdArray, Wgpu};
+use burn::backend::{Autodiff, NdArray, Vulkan, Wgpu};
 use burn_rl::base::ElemType;
 use burn_rl::environment::CartPole;
 
@@ -11,7 +11,7 @@ mod ppo_convolutional;
 mod sac;
 mod utils;
 
-type Backend = Autodiff<NdArray<ElemType>>;
+type Backend = Autodiff<Vulkan<ElemType>>;
 type Env = CartPole;
 
 fn main() {
